@@ -44,8 +44,10 @@ photo upload by shopkeepers, OCR, Android build, Cloud Run deploy.
 ================================================================
 Three pieces, each independently runnable:
 
-  crawler/   one-off Node script. The ONLY thing that ever calls the
-             Google Places API. Writes data/cache/places.json.
+  crawler/   Node script, run repeatedly on a daily schedule. The ONLY
+             thing that ever calls the Google Places API. Writes
+             data/cache/places.json and tracks progress in
+             data/crawl_state.json.
   backend/   Node + Express. Serves GET /shops from the cache plus
              data/own/. Never calls Places. This is what makes the
              budget predictable and the tests runnable offline.
@@ -102,7 +104,7 @@ Each shop is one object with exactly these fields:
   can assert the body shape literally.
 
 ================================================================
-4. TILE GRID AND BUDGET
+4. TILE GRID
 ================================================================
 Bhubaneswar bounding box (to confirm before first crawl):
   lat  20.22 .. 20.42     lng  85.74 .. 85.92
@@ -117,18 +119,51 @@ Exactly 90 tiles.
 At 20 N: 0.02 deg lat ~ 2.22 km, 0.02 deg lng ~ 2.09 km.
 Tile half-diagonal ~ 1.52 km, so search radius 1600 m per tile.
 
-Cost: 14 categories x 90 tiles = 1260 Text Search queries, more with
-pagination. Places API (New) Text Search is billed per request and the
-tier depends on the field mask — id/name/location/address sit in a
-cheaper tier than phones and regularOpeningHours, which we do want.
-
-  ACTION BEFORE FIRST CRAWL: check current Places pricing, work out the
-  cost of 1260 queries at the field mask we need, and compare against
-  the $100 credit. If it is tight, crawl in phases (central tiles and
-  the highest-value categories first) rather than dropping fields.
+One full pass = 14 categories x 90 tiles = 1260 Text Search queries.
+Each query can paginate up to 3 pages, so a full pass is 1260 requests
+best case and ~3780 worst case.
 
 ================================================================
-5. PATHS
+5. CRAWL SCHEDULE AND BUDGET
+================================================================
+Cadence: 400-450 requests per day, for 25 days straight.
+Total: ~10,000-11,250 requests, i.e. roughly three full passes.
+
+The crawler is therefore a resumable daily job, not a one-shot script:
+  - data/crawl_state.json records which (category, tile, page) triples
+    are done, so each day picks up where the last left off
+  - a hard per-run request counter stops the run at the daily cap even
+    mid-tile; the cap lives in .env, not in code
+  - re-passes refresh existing records rather than duplicating them:
+    dedupe on place ID, update fetched_at
+
+Three things this schedule does NOT do, stated plainly so they are not
+assumed away:
+
+  a) It does not reduce cost. Places bills per request. 10,000 requests
+     over 25 days costs exactly what 10,000 requests in one day costs.
+     Pacing helps against a DAILY QUOTA, not against the $100 credit.
+     If the constraint is the credit, the schedule is cost-neutral.
+
+  b) It is about 3x what v1 needs. v1 needs one pass (1260-3780
+     requests). Passes two and three are refresh — worth doing, but not
+     what makes the demo work. If the budget turns out tight, cut the
+     later passes before cutting fields from the mask.
+
+  c) It may outlive the credit. Trial credits expire on a fixed date,
+     not after a fixed spend. Check the expiry before committing to 25
+     days; if it falls inside the window, front-load the useful pass.
+
+  HARD GATE BEFORE B7: look up current Places API (New) Text Search
+  pricing for the field mask actually needed (id, name, location,
+  formattedAddress, nationalPhoneNumber, regularOpeningHours.periods —
+  the last two sit in a higher billing tier than the rest), multiply by
+  the planned request count, and compare against the credit balance and
+  its expiry date. Write the resulting number into this file. Do not
+  start a paid crawl before that number exists.
+
+================================================================
+6. PATHS
 ================================================================
 paths.json at repo root is the single source of truth. No file
 hardcodes a directory. Keys:
@@ -140,7 +175,7 @@ backend/lib/paths.js reads it and resolves everything relative to the
 repo root, so the repo can be moved or cloned without edits.
 
 ================================================================
-6. BUILD ORDER
+7. BUILD ORDER
 ================================================================
 Each step ends with a commit. Do not start the next until the previous
 is committed and confirmed.
@@ -155,19 +190,20 @@ is committed and confirmed.
       computed per request, headers. Tests pass with no key present.
   B5  frontend: category list, shop cards, distance from browser
       geolocation. Talks to localhost.
-  B6  crawler: the only Places caller. Dry-run mode first (prints what
-      it would request, spends nothing).
-  B7  pricing check (section 4), then the first real crawl, phased.
+  B6  crawler: the only Places caller. Resumable against
+      crawl_state.json, daily request cap from .env, dry-run mode first
+      (prints what it would request, spends nothing).
+  B7  pricing check (section 5), then day 1 of the real crawl.
 
 Remote/PR setup is deferred. When you want it: install gh, create the
 remote, push main. Nothing above depends on it — local commits are
 enough for v1.
 
 ================================================================
-7. OPEN QUESTIONS
+8. OPEN QUESTIONS
 ================================================================
   - confirm the bounding box actually covers the client's service area
-  - is there a Google Cloud project with Places API enabled yet, and is
-    the $100 credit on that project
-  - which of the 14 categories matter most to the client (drives the
-    phase order in B7)
+  - is there a Google Cloud project with Places API enabled yet, is the
+    $100 credit on that project, and when does it expire
+  - which of the 14 categories matter most to the client (drives what
+    gets crawled on day 1 rather than day 20)
