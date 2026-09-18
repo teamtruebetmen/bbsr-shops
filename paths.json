@@ -1,0 +1,12 @@
+{
+  "data_root": "data",
+  "cache_file": "data/cache/places.json",
+  "tiles_file": "data/tiles.json",
+  "place_index_file": "data/place_index.json",
+  "state_file": "data/crawl_state.json",
+  "own_root": "data/own",
+  "photos_root": "data/own/photos",
+  "frontend_root": "frontend",
+  "tests_root": "tests",
+  "backend_root": "backend"
+}
