@@ -207,3 +207,51 @@ enough for v1.
     $100 credit on that project, and when does it expire
   - which of the 14 categories matter most to the client (drives what
     gets crawled on day 1 rather than day 20)
+
+================================================================
+9. BUDGET CORRECTION — SUPERSEDES SECTION 5
+================================================================
+Prices verified 2026-09-18 from Google's core services pricing list.
+Per 1,000 requests, first tier:
+
+  Text Search Pro           5,000 free/month   $32.00
+  Text Search Enterprise    1,000 free/month   $35.00
+  Place Details Enterprise  1,000 free/month   $20.00
+  Place Details Photos      1,000 free/month   $ 7.00
+
+Phone sits in the ENTERPRISE tier, so every crawler request bills at
+Text Search Enterprise. The old recurring $200 monthly credit no
+longer exists; it was replaced by these per-SKU free caps.
+
+9.1 TEXT SEARCH, NEVER PLACE DETAILS, FOR PHONES
+  Text Search returns phone for EVERY place on the result page (up to
+  20). Place Details returns phone for ONE place per request.
+      Text Search Enterprise:   $35/1000 / ~15 places = ~$0.002/phone
+      Place Details Enterprise: $20/1000 / 1 place    = ~$0.020/phone
+  ~10x cheaper per number. The crawler uses Text Search only.
+
+9.2 ONE PASS, NOT THREE
+  Full pass = 1260 queries = 1260 requests best case, ~3780 worst case
+  with full pagination. Minus 1000 free: $9 to $97.
+  ONE PASS FITS INSIDE $100. The 450/day x 25 day plan in section 5
+  would be ~11,250 requests, about $359 — 3.5x the budget. v1 is one
+  pass. Section 5's cadence is void; its resumability rules still hold.
+
+9.3 RULES
+  a) PAGINATE FULLY. One extra request yields up to 20 more places.
+     Biggest lever on phones-per-rupee.
+  b) Straddle a month boundary: free caps reset monthly, so a pass
+     spanning two months gets 2000 free instead of 1000. This is the
+     only thing daily pacing actually buys.
+  c) Never cut phone from the field mask. Dropping to Pro saves
+     $3/1000 and destroys the point of the app.
+  d) Cut scope in this order if short: refresh passes, then low-yield
+     category/tile pairs, then tile count.
+
+9.4 has_phone
+  Shops with no phone are NOT discarded — stored with has_phone:false.
+  Discarding saves no spend (the request is billed either way), and
+  tea/paan/betel listings often have no number, so hard-filtering
+  would empty exactly those categories. The backend applies
+  REQUIRE_PHONE from .env (default 1) at serve time. Flip it without
+  re-crawling.
