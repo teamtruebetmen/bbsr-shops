@@ -3,6 +3,7 @@ const path = require("path");
 const express = require("express");
 
 const app = express();
+app.use((req,res,next)=>{res.set("Access-Control-Allow-Origin","*");next();});
 const PORT = process.env.PORT || 3030;
 const FILE = path.join(__dirname, "..", "data", "own", "shops.json");
 
