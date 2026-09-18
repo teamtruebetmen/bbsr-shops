@@ -1,0 +1,173 @@
+bbsr-shops — v1 TASK PLAN
+Rewritten 2026-09-18. Supersedes all earlier plans.
+
+================================================================
+0. WHAT CHANGED AND WHY
+================================================================
+The earlier plan assumed four coding agents (Claude Code, two Gemini
+agents, Jules) working in one shared repo, with per-agent diaries under
+agent_logs/ and a PR-per-task workflow.
+
+That is dropped. Claude Code does not run on this device: the npm
+package installs but its native binary is published only for
+darwin-arm64, darwin-x64, linux-x64, linux-arm64, the musl variants,
+win32-x64 and win32-arm64. There is no linux-arm64-android build, so
+Termux on the Pad 6 cannot run it.
+
+v1 is therefore built by one person (Jiban) with Claude in chat, in a
+single local repo. Gemini in a browser tab may still be used to draft
+individual files; those get pasted in and committed by hand. No agent
+roster, no diaries, no PR ceremony.
+
+REPO: /data/data/com.termux/files/home/bbsr-shops   (branch: main)
+
+================================================================
+1. SCOPE
+================================================================
+A web app listing shops in Bhubaneswar by category, for a client.
+Android app comes later, only after a working web demo.
+
+14 starting categories (client may add more):
+  tea, betel, variety, paan, grocery, mobile, stationery, hardware,
+  restaurants, dhabas, kirana, cloth, office/school essentials, toys
+
+v1 is done when:
+  - a category page lists real shops with name, address, distance
+  - data comes from a local cache file, not a live API call per request
+  - the whole test suite passes with no API key present
+
+NOT in v1: user accounts, reviews, ratings written by users, payments,
+photo upload by shopkeepers, OCR, Android build, Cloud Run deploy.
+
+================================================================
+2. ARCHITECTURE
+================================================================
+Three pieces, each independently runnable:
+
+  crawler/   one-off Node script. The ONLY thing that ever calls the
+             Google Places API. Writes data/cache/places.json.
+  backend/   Node + Express. Serves GET /shops from the cache plus
+             data/own/. Never calls Places. This is what makes the
+             budget predictable and the tests runnable offline.
+  frontend/  static HTML/CSS/JS. Reads apiBase from frontend/config.js.
+
+Runs on Termux localhost in v1 (backend on :3000, frontend served by
+`python -m http.server` or similar). Hosting is a v2 question and is
+deliberately left open — do not hardcode any deploy assumption.
+
+================================================================
+3. SHOP RECORD SCHEMA
+================================================================
+Each shop is one object with exactly these fields:
+
+  id          string   Places place ID, or "own:<slug>" for hand-entered
+  name        string
+  category    string   one of the 14 above
+  lat         number
+  lng         number
+  address     string   formatted address
+  phones      array    see 3.1
+  photos      array    see 3.2
+  hours       object   Places regularOpeningHours.periods, or null
+  source      string   "places" | "own"
+  fetched_at  string   ISO date the record was last written
+
+3.1 phones
+  Places returns at most ONE number per place, in two formats
+  (nationalPhoneNumber and internationalPhoneNumber) — the same number,
+  not two numbers. So a plural column only makes sense if it is fed from
+  several sources. Each entry:
+      { number: "+916742...", source: "places" | "own" | "ocr", note: "" }
+  v1 fills this from Places (0 or 1 entry) and from data/own (any
+  number of entries, hand-entered).
+
+3.2 photos
+  v1 stores ONLY our own photos, as paths relative to data/own/photos/.
+  Google Places photo bytes are deliberately NOT downloaded:
+    - each photo fetch is a separate billed Places request, which at
+      ~10 shops per query over hundreds of queries would blow the budget
+    - Google's terms permit caching place IDs but not photo content
+  So the OCR idea (reading phone numbers off shop hoardings) applies to
+  photos we take ourselves. That is a v2 pipeline; it will append
+  entries to phones[] with source "ocr". Not in v1.
+
+3.3 openNow is NOT a stored field
+  A cached boolean is wrong within a day. The crawler stores the stable
+  periods array; the backend computes open/closed per request in
+  Asia/Kolkata. No periods -> null -> frontend shows "hours unknown".
+
+3.4 Response shape
+  GET /shops returns a bare JSON array of the objects above. Freshness
+  metadata travels in headers (X-Data-As-Of, X-Cache-Status) so tests
+  can assert the body shape literally.
+
+================================================================
+4. TILE GRID AND BUDGET
+================================================================
+Bhubaneswar bounding box (to confirm before first crawl):
+  lat  20.22 .. 20.42     lng  85.74 .. 85.92
+
+Tile size 0.02 deg. Lat span 0.20 -> 10 rows. Lng span 0.18 -> 9 cols.
+Exactly 90 tiles.
+
+  MUST compute the grid in integer micro-degrees (20220000 etc), not
+  floats. In floating point 0.20/0.02 evaluates to 9.999999999999986,
+  and a naive loop emits a spurious sliver row. Assert tiles.length===90.
+
+At 20 N: 0.02 deg lat ~ 2.22 km, 0.02 deg lng ~ 2.09 km.
+Tile half-diagonal ~ 1.52 km, so search radius 1600 m per tile.
+
+Cost: 14 categories x 90 tiles = 1260 Text Search queries, more with
+pagination. Places API (New) Text Search is billed per request and the
+tier depends on the field mask — id/name/location/address sit in a
+cheaper tier than phones and regularOpeningHours, which we do want.
+
+  ACTION BEFORE FIRST CRAWL: check current Places pricing, work out the
+  cost of 1260 queries at the field mask we need, and compare against
+  the $100 credit. If it is tight, crawl in phases (central tiles and
+  the highest-value categories first) rather than dropping fields.
+
+================================================================
+5. PATHS
+================================================================
+paths.json at repo root is the single source of truth. No file
+hardcodes a directory. Keys:
+
+  data_root, cache_file, tiles_file, place_index_file, state_file,
+  own_root, photos_root, frontend_root, tests_root, backend_root
+
+backend/lib/paths.js reads it and resolves everything relative to the
+repo root, so the repo can be moved or cloned without edits.
+
+================================================================
+6. BUILD ORDER
+================================================================
+Each step ends with a commit. Do not start the next until the previous
+is committed and confirmed.
+
+  B1  paths.json, backend/lib/paths.js, .gitignore, .env.example
+  B2  crawler/tiles.js  — grid generator + the ===90 assertion, with a
+      unit test. No network.
+  B3  data/own/ with 5-10 hand-entered shops, real ones you know, with
+      phones. This is the fixture the whole stack is tested against
+      before any API key exists.
+  B4  backend: GET /shops, filtering by category and radius, hours
+      computed per request, headers. Tests pass with no key present.
+  B5  frontend: category list, shop cards, distance from browser
+      geolocation. Talks to localhost.
+  B6  crawler: the only Places caller. Dry-run mode first (prints what
+      it would request, spends nothing).
+  B7  pricing check (section 4), then the first real crawl, phased.
+
+Remote/PR setup is deferred. When you want it: install gh, create the
+remote, push main. Nothing above depends on it — local commits are
+enough for v1.
+
+================================================================
+7. OPEN QUESTIONS
+================================================================
+  - confirm the bounding box actually covers the client's service area
+  - is there a Google Cloud project with Places API enabled yet, and is
+    the $100 credit on that project
+  - which of the 14 categories matter most to the client (drives the
+    phase order in B7)
